@@ -7,9 +7,16 @@ on:
       - main
   workflow_dispatch:
 
+defaults:
+ run:
+   shell: bash
+
 jobs:
   test:
-    runs-on: ubuntu-20.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v3
         with:
@@ -17,6 +24,9 @@ jobs:
       - uses: actions/setup-go@v3
         with:
           go-version-file: go.mod
+      # Use MSYS2's bash.exe in subsequent steps.
+      - if: startsWith(matrix.os, 'windows-')
+        run: echo 'C:\msys64\usr\bin' >> $GITHUB_PATH
       - run: go mod download
       - run: make fmt
       - run: make tidy
@@ -25,17 +35,6 @@ jobs:
       - run: make test-unit
       - run: make test-system
       - run: make test-heavy
-  test-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
-        with:
-          go-version-file: go.mod
-      - run: go test -short ./...
-      - run: mkdir dist -ea 0
-      - run: go build -o dist ./cmd/...
-      - run: go test -v ./mdtest
   output-check:
     runs-on: ubuntu-20.04
     steps:

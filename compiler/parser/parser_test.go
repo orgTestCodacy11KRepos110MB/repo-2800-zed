@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -77,11 +76,9 @@ func testZed(t *testing.T, line string) {
 
 	assert.JSONEq(t, string(pigeonJSON), string(astJSON), "pigeon and AST mismatch: %q", line)
 
-	if runtime.GOOS != "windows" {
-		pegJSON, err := parsePEGjs(line)
-		assert.NoError(t, err, "parsePEGjs: %q", line)
-		assert.JSONEq(t, string(pigeonJSON), string(pegJSON), "pigeon and PEGjs mismatch: %q", line)
-	}
+	pegJSON, err := parsePEGjs(line)
+	assert.NoError(t, err, "parsePEGjs: %q", line)
+	assert.JSONEq(t, string(pigeonJSON), string(pegJSON), "pigeon and PEGjs mismatch: %q", line)
 }
 
 func TestValid(t *testing.T) {
