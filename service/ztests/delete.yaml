@@ -6,10 +6,10 @@ script: |
   id=$(zed query -f text "from test@main:objects | cut id:=ksuid(id) | tail 1")
   zed load -q 2.zson
   zed query -z "*"
-  echo === | tee /dev/stderr
+  echo === | tee >(cat >&2)
   zed delete -q $id
   zed query -z "*"
-  echo === | tee /dev/stderr
+  echo === | tee >(cat >&2)
   ! zed delete -q 27aaaaaaaaaaaaaaaaaaaaaaaaa
 
 inputs:

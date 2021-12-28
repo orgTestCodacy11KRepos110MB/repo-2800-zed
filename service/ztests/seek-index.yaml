@@ -1,7 +1,7 @@
 script: |
   source service.sh
   for o in asc desc; do
-    echo // $o | tee /dev/stderr
+    echo // $o | tee >(cat >&2)
     zed create -seekstride 2KB -orderby ts:$o -q $o
     zed use -q $o
     zed load -q babble.zson
@@ -16,7 +16,7 @@ inputs:
     source: ../../testdata/babble.zson
   - name: query.sh
     data: |
-      echo // $1 | tee /dev/stderr
+      echo // $1 | tee >(cat >&2)
       zed query -z -s "$1"
 
 outputs:
