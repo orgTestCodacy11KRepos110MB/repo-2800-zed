@@ -1,4 +1,4 @@
-package dag_test
+package kernel_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"github.com/brimdata/zed/compiler"
 	"github.com/brimdata/zed/compiler/ast"
 	"github.com/brimdata/zed/compiler/ast/dag"
+	"github.com/brimdata/zed/compiler/kernel"
 	"github.com/brimdata/zed/compiler/semantic"
 	"github.com/brimdata/zed/pkg/field"
 	"github.com/brimdata/zed/zfmt"
@@ -21,12 +22,12 @@ func TestKeyFilter(t *testing.T) {
 			p := compiler.MustParse(query)
 			op, err := semantic.Analyze(context.Background(), p.(*ast.Sequential), nil, nil)
 			require.NoError(t, err)
-			kf := dag.NewKeyFilter(field.New("pk"), op.Ops[0].(*dag.Filter).Expr)
+			kf := kernel.NewKeyFilter(field.New("pk"), op.Ops[0].(*dag.Filter).Expr)
 			if kf == nil {
 				assert.Equal(t, expected, "", "expected key filter to be optimizable but it was not")
 				return
 			}
-			assert.Equal(t, expected, zfmt.DAGExpr(kf.Expr))
+			assert.Equal(t, expected, zfmt.DAGExpr(kf))
 		})
 	}
 	test("pk<1", "pk<1", t)

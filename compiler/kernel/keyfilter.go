@@ -1,14 +1,11 @@
-package dag
+package kernel
 
 import (
+	"github.com/brimdata/zed/compiler/ast/dag"
 	"github.com/brimdata/zed/order"
 	"github.com/brimdata/zed/pkg/field"
 	"golang.org/x/exp/slices"
 )
-
-type KeyFilter struct {
-	Expr Expr
-}
 
 // NewKeyFilter creates a KeyFilter that contains a modified form of node where
 // only predicates operating on key are kept. The underlying expression is
@@ -18,46 +15,44 @@ type KeyFilter struct {
 // Currently KeyFilter only recognizes simple key predicates against a literal
 // value and using the comparators ==, >=, >, <, and <=; otherwise the predicate is
 // ignored.
-func NewKeyFilter(key field.Path, node Expr) *KeyFilter {
-	e, _ := visitLeaves(node, func(cmp string, lhs *This, rhs *Literal) Expr {
+func NewKeyFilter(key field.Path, node dag.Expr) dag.Expr {
+	e, _ := visitLeaves(node, func(cmp string, lhs *dag.This, rhs *dag.Literal) dag.Expr {
 		if !key.Equal(lhs.Path) {
 			return nil
 		}
-		return NewBinaryExpr(cmp, lhs, rhs)
+		//XXX do we use NewBinaryExpr consistently?
+		return dag.NewBinaryExpr(cmp, lhs, rhs)
 	})
-	if e == nil {
-		return nil
-	}
-	return &KeyFilter{e}
+	return e
 }
 
-func (k *KeyFilter) CroppedByExpr(o order.Which, prefix ...string) Expr {
-	return k.newExpr(o, prefix, true)
+func keyFilterToCroppedByExpr(k dag.Expr, o order.Which, prefix ...string) dag.Expr {
+	return newKeyFilterExpr(k, o, prefix, true)
 }
 
 // SpanExpr creates an Expr that returns true if the KeyFilter has a value
 // within a span of values. The span compared against must be a record with the
 // fields "lower" and "upper", where "lower" is the inclusive lower bounder and
 // "upper" is the exclusive upper bound.
-func (k *KeyFilter) SpanExpr(o order.Which, prefix ...string) Expr {
-	return k.newExpr(o, prefix, false)
+func keyFilterToSpanExpr(k dag.Expr, o order.Which, prefix ...string) dag.Expr {
+	return newKeyFilterExpr(k, o, prefix, false)
 }
 
-func (k *KeyFilter) newExpr(o order.Which, prefix []string, cropped bool) Expr {
+func newKeyFilterExpr(k dag.Expr, o order.Which, prefix []string, cropped bool) dag.Expr {
 	lower := append(slices.Clone(prefix), "lower")
 	upper := append(slices.Clone(prefix), "upper")
 	if cropped {
 		lower, upper = upper, lower
 	}
-	e, _ := visitLeaves(k.Expr, func(op string, this *This, lit *Literal) Expr {
+	e, _ := visitLeaves(k, func(op string, this *dag.This, lit *dag.Literal) dag.Expr {
 		switch op {
 		case "==":
 			if cropped {
-				return &Literal{"Literal", "false"}
+				return &dag.Literal{Kind: "Literal", Value: "false"}
 			}
-			lhs := relativeToCompare("<=", &This{"This", lower}, lit, o)
-			rhs := relativeToCompare(">=", &This{"This", upper}, lit, o)
-			return NewBinaryExpr("and", lhs, rhs)
+			lhs := relativeToCompare("<=", &dag.This{Kind: "This", Path: lower}, lit, o)
+			rhs := relativeToCompare(">=", &dag.This{Kind: "This", Path: upper}, lit, o)
+			return dag.NewBinaryExpr("and", lhs, rhs)
 		case "<", "<=":
 			this.Path = lower
 		case ">", ">=":
@@ -68,17 +63,17 @@ func (k *KeyFilter) newExpr(o order.Which, prefix []string, cropped bool) Expr {
 	return e
 }
 
-func relativeToCompare(op string, lhs, rhs Expr, o order.Which) *BinaryExpr {
-	nullsMax := &Literal{"Literal", "false"}
+func relativeToCompare(op string, lhs, rhs dag.Expr, o order.Which) *dag.BinaryExpr {
+	nullsMax := &dag.Literal{Kind: "Literal", Value: "false"}
 	if o == order.Asc {
 		nullsMax.Value = "true"
 	}
-	lhs = &Call{Kind: "Call", Name: "compare", Args: []Expr{lhs, rhs, nullsMax}}
-	return NewBinaryExpr(op, lhs, &Literal{"Literal", "0"})
+	lhs = &dag.Call{Kind: "Call", Name: "compare", Args: []dag.Expr{lhs, rhs, nullsMax}}
+	return dag.NewBinaryExpr(op, lhs, &dag.Literal{Kind: "Literal", Value: "0"})
 }
 
-func visitLeaves(node Expr, v func(cmp string, lhs *This, rhs *Literal) Expr) (Expr, bool) {
-	e, ok := node.(*BinaryExpr)
+func visitLeaves(node dag.Expr, v func(cmp string, lhs *dag.This, rhs *dag.Literal) dag.Expr) (dag.Expr, bool) {
+	e, ok := node.(*dag.BinaryExpr)
 	if !ok {
 		return nil, true
 	}
@@ -101,17 +96,17 @@ func visitLeaves(node Expr, v func(cmp string, lhs *This, rhs *Literal) Expr) (E
 			}
 			return lhs, true
 		}
-		return NewBinaryExpr(e.Op, lhs, rhs), true
+		return dag.NewBinaryExpr(e.Op, lhs, rhs), true
 	case "==", "<", "<=", ">", ">=":
-		this, ok := e.LHS.(*This)
+		this, ok := e.LHS.(*dag.This)
 		if !ok {
 			return nil, true
 		}
-		rhs, ok := e.RHS.(*Literal)
+		rhs, ok := e.RHS.(*dag.Literal)
 		if !ok {
 			return nil, true
 		}
-		lhs := &This{"This", slices.Clone(this.Path)}
+		lhs := &dag.This{Kind: "This", Path: slices.Clone(this.Path)}
 		return v(e.Op, lhs, rhs), true
 	default:
 		return nil, true

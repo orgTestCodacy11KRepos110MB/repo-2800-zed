@@ -207,6 +207,9 @@ func (b *Builder) compileLeaf(o dag.Op, parent zbuf.Puller) (zbuf.Puller, error)
 			return nil, err
 		}
 		as, err := compileLval(v.As)
+		if err != nil {
+			return nil, err
+		}
 		if len(as) != 1 {
 			return nil, errors.New("explode field must be a top-level field")
 		}

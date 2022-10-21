@@ -41,7 +41,7 @@ func (f *Filter) AsKeySpanFilter(key field.Path, o order.Which) (*expr.SpanFilte
 	if k == nil {
 		return nil, nil
 	}
-	e := k.SpanExpr(o)
+	e := keyFilterToSpanExpr(k, o)
 	eval, err := compileExpr(e)
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (f *Filter) AsKeyCroppedByFilter(key field.Path, o order.Which) (*expr.Span
 	if k == nil {
 		return nil, nil
 	}
-	e := k.CroppedByExpr(o)
+	e := keyFilterToCroppedByExpr(k, o)
 	eval, err := compileExpr(e)
 	if err != nil {
 		return nil, err
@@ -62,11 +62,11 @@ func (f *Filter) AsKeyCroppedByFilter(key field.Path, o order.Which) (*expr.Span
 	return expr.NewSpanFilter(eval), nil
 }
 
-func (f *Filter) keyFilter(key field.Path) *dag.KeyFilter {
+func (f *Filter) keyFilter(key field.Path) dag.Expr {
 	if f == nil {
 		return nil
 	}
-	return dag.NewKeyFilter(key, f.pushdown)
+	return NewKeyFilter(key, f.pushdown)
 }
 
 type DeleteFilter struct {
