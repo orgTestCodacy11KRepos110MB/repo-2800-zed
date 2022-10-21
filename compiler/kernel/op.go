@@ -535,7 +535,11 @@ func (b *Builder) compileTrunk(trunk *dag.Trunk, parent zbuf.Puller) ([]zbuf.Pul
 				deleteFilter := &DeleteFilter{pushdown}
 				planner, err = exec.NewDeletePlanner(b.pctx.Context, b.pctx.Zctx, b.source.Lake(), src.ID, src.Commit, deleteFilter)
 			} else {
-				planner, err = exec.NewPlannerByID(b.pctx.Context, b.pctx.Zctx, b.source.Lake(), src.ID, src.Commit, pushdown)
+				pruner, err := b.PrunerOf(trunk)
+				if err != nil {
+					return nil, err
+				}
+				planner, err = exec.NewPlannerByID(b.pctx.Context, b.pctx.Zctx, b.source.Lake(), src.ID, src.Commit, pushdown, pruner)
 			}
 			if err != nil {
 				return nil, err
@@ -628,6 +632,19 @@ func (b *Builder) PushdownOf(trunk *dag.Trunk) (*Filter, error) {
 		return nil, errors.New("non-filter pushdown operator not yet supported")
 	}
 	return &Filter{f.Expr, b}, nil
+}
+
+func (b *Builder) PrunerOf(trunk *dag.Trunk) (*exec.Pruner, error) {
+	if trunk.Pushdown == nil {
+		return nil, nil
+	}
+	//f, ok := trunk.Pushdown.(*dag.Filter)
+	_, ok := trunk.Pushdown.(*dag.Filter)
+	if !ok {
+		return nil, errors.New("non-filter pushdown operator not yet supported")
+	}
+	// XXX TBD
+	return nil, nil
 }
 
 func (b *Builder) evalAtCompileTime(in dag.Expr) (val *zed.Value, err error) {

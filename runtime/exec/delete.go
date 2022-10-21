@@ -23,7 +23,8 @@ type DeletePlanner struct {
 }
 
 func NewDeletePlanner(ctx context.Context, zctx *zed.Context, r *lake.Root, poolID, commit ksuid.KSUID, filter zbuf.Filter) (*DeletePlanner, error) {
-	p, err := NewPlannerByID(ctx, zctx, r, poolID, commit, filter)
+	// XXX need pruner here?
+	p, err := NewPlannerByID(ctx, zctx, r, poolID, commit, filter, nil)
 	if err != nil {
 		return nil, err
 	}

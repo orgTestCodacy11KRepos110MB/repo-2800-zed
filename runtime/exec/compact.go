@@ -37,7 +37,7 @@ func Compact(ctx context.Context, pool *lake.Pool, branchName string, objectIDs 
 		compact.AddDataObject(o)
 	}
 	zctx := zed.NewContext()
-	planner, err := NewSortedPlanner(ctx, zctx, pool, compact, &nopFilter{})
+	planner, err := NewSortedPlanner(ctx, zctx, pool, compact, &nopFilter{}, nil)
 	if err != nil {
 		return ksuid.Nil, err
 	}

@@ -10,8 +10,6 @@ import (
 	"github.com/brimdata/zed/lake/data"
 	"github.com/brimdata/zed/lake/index"
 	"github.com/brimdata/zed/order"
-	"github.com/brimdata/zed/runtime/expr"
-	"github.com/brimdata/zed/runtime/expr/extent"
 	"github.com/brimdata/zed/runtime/meta"
 	"github.com/brimdata/zed/runtime/op/from"
 	"github.com/brimdata/zed/zbuf"
@@ -25,6 +23,7 @@ type Planner struct {
 	pool     *lake.Pool
 	snap     commits.View
 	filter   zbuf.Filter
+	pruner   *Pruner
 	once     sync.Once
 	ch       chan meta.Partition
 	group    *errgroup.Group
@@ -33,13 +32,14 @@ type Planner struct {
 
 var _ from.Planner = (*Planner)(nil)
 
-func NewSortedPlanner(ctx context.Context, zctx *zed.Context, pool *lake.Pool, snap commits.View, filter zbuf.Filter) (*Planner, error) {
+func NewSortedPlanner(ctx context.Context, zctx *zed.Context, pool *lake.Pool, snap commits.View, filter zbuf.Filter, pruner *Pruner) (*Planner, error) {
 	return &Planner{
 		ctx:    ctx,
 		zctx:   zctx,
 		pool:   pool,
 		snap:   snap,
 		filter: filter,
+		pruner: pruner,
 		ch:     make(chan meta.Partition),
 	}, nil
 }
@@ -68,7 +68,7 @@ func (p *Planner) run() {
 	p.group, ctx = errgroup.WithContext(p.ctx)
 	p.group.Go(func() error {
 		defer close(p.ch)
-		return ScanPartitions(ctx, p.snap, p.pool.Layout, p.filter, p.ch)
+		return ScanPartitions(ctx, p.snap, p.pool.Layout, p.filter, p.pruner, p.ch)
 	})
 }
 
@@ -142,12 +142,10 @@ func ScanInOrder(ctx context.Context, snap commits.View, o order.Which, ch chan<
 	return nil
 }
 
-func filterObjects(objects []*data.Object, filter *expr.SpanFilter, o order.Which) []*data.Object {
-	cmp := expr.NewValueCompareFn(o == order.Asc)
+func filterObjects(objects []*data.Object, pruner *Pruner, o order.Which) []*data.Object {
 	out := objects[:0]
 	for _, obj := range objects {
-		span := extent.NewGeneric(obj.First, obj.Last, cmp)
-		if filter == nil || !filter.Eval(span.First(), span.Last()) {
+		if pruner == nil || !pruner.Prune(obj) {
 			out = append(out, obj)
 		}
 	}
@@ -157,13 +155,11 @@ func filterObjects(objects []*data.Object, filter *expr.SpanFilter, o order.Whic
 // ScanPartitions partitions all the data objects in snap overlapping
 // span into non-overlapping partitions, sorts them by pool key and order,
 // and sends them to ch.
-func ScanPartitions(ctx context.Context, snap commits.View, layout order.Layout, filter zbuf.Filter, ch chan<- meta.Partition) error {
+func ScanPartitions(ctx context.Context, snap commits.View, layout order.Layout, filter zbuf.Filter, pruner *Pruner, ch chan<- meta.Partition) error {
 	objects := snap.Select(nil, layout.Order)
-	f, err := filter.AsKeySpanFilter(layout.Primary(), layout.Order)
-	if err != nil {
-		return err
+	if pruner != nil {
+		objects = filterObjects(objects, pruner, layout.Order)
 	}
-	objects = filterObjects(objects, f, layout.Order)
 	for _, p := range PartitionObjects(objects, layout.Order) {
 		select {
 		case ch <- p:
@@ -185,18 +181,18 @@ func ScanIndexes(ctx context.Context, snap commits.View, o order.Which, ch chan<
 	return nil
 }
 
-func NewPlanner(ctx context.Context, zctx *zed.Context, p *lake.Pool, commit ksuid.KSUID, filter zbuf.Filter) (from.Planner, error) {
+func NewPlanner(ctx context.Context, zctx *zed.Context, p *lake.Pool, commit ksuid.KSUID, filter zbuf.Filter, pruner *Pruner) (from.Planner, error) {
 	snap, err := p.Snapshot(ctx, commit)
 	if err != nil {
 		return nil, err
 	}
-	return NewSortedPlanner(ctx, zctx, p, snap, filter)
+	return NewSortedPlanner(ctx, zctx, p, snap, filter, pruner)
 }
 
-func NewPlannerByID(ctx context.Context, zctx *zed.Context, r *lake.Root, poolID, commit ksuid.KSUID, filter zbuf.Filter) (from.Planner, error) {
+func NewPlannerByID(ctx context.Context, zctx *zed.Context, r *lake.Root, poolID, commit ksuid.KSUID, filter zbuf.Filter, pruner *Pruner) (from.Planner, error) {
 	pool, err := r.OpenPool(ctx, poolID)
 	if err != nil {
 		return nil, err
 	}
-	return NewPlanner(ctx, zctx, pool, commit, filter)
+	return NewPlanner(ctx, zctx, pool, commit, filter, pruner)
 }
