@@ -109,7 +109,7 @@ func newDeleterScanner(d *Deleter, part Partition) (zbuf.Puller, error) {
 		if err != nil {
 			return nil, err
 		}
-		rc, err := o.NewReader(d.pctx.Context, d.pool.Storage(), d.pool.DataPath, rg)
+		rc, err := o.NewReader(d.pctx.Context, d.pool.Storage(), d.pool.DataPath, *rg)
 		if err != nil {
 			pullersDone()
 			return nil, err

@@ -1,18 +1,11 @@
 package meta
 
 import (
-	"context"
 	"errors"
 	"io"
 
 	"github.com/brimdata/zed/lake"
 	"github.com/brimdata/zed/lake/commits"
-	"github.com/brimdata/zed/lake/data"
-	"github.com/brimdata/zed/lake/index"
-	"github.com/brimdata/zed/lake/seekindex"
-	"github.com/brimdata/zed/order"
-	"github.com/brimdata/zed/runtime/expr"
-	"github.com/brimdata/zed/runtime/expr/extent"
 	"github.com/brimdata/zed/runtime/op"
 	"github.com/brimdata/zed/runtime/op/merge"
 	"github.com/brimdata/zed/zbuf"
@@ -121,7 +114,7 @@ func newSortedPartitionScanner(p *SequenceScanner, part Partition) (zbuf.Puller,
 		if err != nil {
 			return nil, err
 		}
-		rc, err := o.NewReader(p.pctx.Context, p.pool.Storage(), p.pool.DataPath, rg)
+		rc, err := o.NewReader(p.pctx.Context, p.pool.Storage(), p.pool.DataPath, *rg)
 		if err != nil {
 			pullersDone()
 			return nil, err
@@ -165,44 +158,4 @@ func (s *statScanner) Pull(done bool) (zbuf.Batch, error) {
 		s.scanner = nil
 	}
 	return batch, err
-}
-
-func objectRange(ctx context.Context, pool *lake.Pool, snap commits.View, filter zbuf.Filter, o *data.Object) (seekindex.Range, error) {
-	var indexSpan extent.Span
-	var cropped *expr.SpanFilter
-	//XXX this is suboptimal because we traverse every index rule of every object
-	// even though we should know what rules we need upstream by analyzing the
-	// type of index lookup we're doing and select only the rules needed
-	if filter != nil {
-		if idx := index.NewFilter(pool.Storage(), pool.IndexPath, filter); idx != nil {
-			rules, err := snap.LookupIndexObjectRules(o.ID)
-			if err != nil && !errors.Is(err, commits.ErrNotFound) {
-				return seekindex.Range{}, err
-			}
-			if len(rules) > 0 {
-				indexSpan, err = idx.Apply(ctx, o.ID, rules)
-				if err != nil || indexSpan == nil {
-					return seekindex.Range{}, err
-				}
-			}
-		}
-		var err error
-		cropped, err = filter.AsKeyCroppedByFilter(pool.Layout.Primary(), pool.Layout.Order)
-		if err != nil {
-			return seekindex.Range{}, err
-		}
-	}
-	cmp := expr.NewValueCompareFn(pool.Layout.Order == order.Asc)
-	span := extent.NewGeneric(o.First, o.Last, cmp)
-	if indexSpan != nil || cropped != nil && cropped.Eval(span.First(), span.Last()) {
-		// There's an index available or the object's span is cropped by
-		// p.filter, so use the seek index to find the range to scan.
-		spanFilter, err := filter.AsKeySpanFilter(pool.Layout.Primary(), pool.Layout.Order)
-		if err != nil {
-			return seekindex.Range{}, err
-		}
-		return data.LookupSeekRange(ctx, pool.Storage(), pool.DataPath, o, cmp, spanFilter, indexSpan)
-	}
-	// Scan the entire object.
-	return seekindex.Range{End: o.Size}, nil
 }
