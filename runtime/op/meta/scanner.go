@@ -146,3 +146,39 @@ func objectReader(ctx context.Context, zctx *zed.Context, snap commits.View, ord
 		return val, err
 	}), nil
 }
+
+func partitionReader(ctx context.Context, zctx *zed.Context, layout order.Layout, snap commits.View, filter zbuf.Filter) (zio.Reader, error) {
+	parts, err := sortedPartitions(snap, layout, filter)
+	if err != nil {
+		return nil, err
+	}
+	m := zson.NewZNGMarshalerWithContext(zctx)
+	m.Decorate(zson.StylePackage)
+	return readerFunc(func() (*zed.Value, error) {
+		if len(parts) == 0 {
+			return nil, nil
+		}
+		p := parts[0]
+		val, err := m.Marshal(p)
+		parts = parts[1:]
+		return val, err
+	}), nil
+}
+
+func indexObjectReader(ctx context.Context, zctx *zed.Context, snap commits.View, order order.Which) (zio.Reader, error) {
+	indexes := snap.SelectIndexes(nil, order)
+	m := zson.NewZNGMarshalerWithContext(zctx)
+	m.Decorate(zson.StylePackage)
+	return readerFunc(func() (*zed.Value, error) {
+		if len(indexes) == 0 {
+			return nil, nil
+		}
+		val, err := m.Marshal(indexes[0])
+		indexes = indexes[1:]
+		return val, err
+	}), nil
+}
+
+type readerFunc func() (*zed.Value, error)
+
+func (r readerFunc) Read() (*zed.Value, error) { return r() }

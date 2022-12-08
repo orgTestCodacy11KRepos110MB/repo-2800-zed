@@ -32,11 +32,6 @@ type Searcher struct {
 	unmarshaler *zson.UnmarshalZNGContext
 }
 
-type ObjectRange struct {
-	data.Object
-	Range *seekindex.Range
-}
-
 func NewSearcher(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap commits.View, filter zbuf.Filter, progress *zbuf.Progress) *Searcher {
 	return &Searcher{
 		pctx:        pctx,
@@ -45,9 +40,14 @@ func NewSearcher(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap com
 		pool:        pool,
 		progress:    progress,
 		snap:        snap,
-		unmarshaler: zson.NewZNGUnmarshaler(),
 		marshaler:   zson.NewZNGMarshaler(),
+		unmarshaler: zson.NewZNGUnmarshaler(),
 	}
+}
+
+type ObjectRange struct {
+	data.Object
+	Range *seekindex.Range
 }
 
 func (s *Searcher) Pull(done bool) (zbuf.Batch, error) {
@@ -69,6 +69,7 @@ func (s *Searcher) Pull(done bool) (zbuf.Batch, error) {
 	if err := s.unmarshaler.Unmarshal(&vals[0], &object); err != nil {
 		return nil, err
 	}
+	// XXX move ObjectRange into objectRange as return value?
 	r, err := objectRange(s.pctx.Context, s.pool, s.snap, s.filter, &object)
 	if err != nil {
 		return nil, err

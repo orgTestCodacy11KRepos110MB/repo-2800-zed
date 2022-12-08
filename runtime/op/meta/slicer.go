@@ -2,21 +2,91 @@ package meta
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/brimdata/zed"
+	"github.com/brimdata/zed/lake"
 	"github.com/brimdata/zed/lake/commits"
 	"github.com/brimdata/zed/lake/data"
 	"github.com/brimdata/zed/order"
 	"github.com/brimdata/zed/runtime/expr"
 	"github.com/brimdata/zed/runtime/expr/extent"
+	"github.com/brimdata/zed/runtime/op"
 	"github.com/brimdata/zed/zbuf"
-	"github.com/brimdata/zed/zio"
 	"github.com/brimdata/zed/zson"
 	"github.com/segmentio/ksuid"
 )
+
+// Slicer implements an op that pulls metadata ObjectRanges and organizes
+// them into overlapping ObjectRanges into a sequence of non-overlapping Partitions.
+type Slicer struct {
+	parent      zbuf.Puller
+	pctx        *op.Context
+	pool        *lake.Pool
+	progress    *zbuf.Progress
+	snap        commits.View
+	marshaler   *zson.MarshalZNGContext
+	unmarshaler *zson.UnmarshalZNGContext
+}
+
+func NewSlicer(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap commits.View, filter zbuf.Filter, progress *zbuf.Progress) *Slicer {
+	return &Slicer{
+		pctx:        pctx,
+		parent:      parent,
+		filter:      filter,
+		pool:        pool,
+		progress:    progress,
+		snap:        snap,
+		marshaler:   zson.NewZNGMarshaler(),
+		unmarshaler: zson.NewZNGUnmarshaler(),
+	}
+}
+
+func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
+	for {
+		batch, err := s.parent.Pull(done)
+		if err != nil {
+			return nil, err
+		}
+		if batch == nil {
+			//XXX return what we have
+		}
+		vals := batch.Values()
+		if len(vals) != 1 {
+			// We currently support only one object per batch.
+			return nil, errors.New("system error: Searcher encountered multi-valued batch")
+		}
+		var object ObjectRange
+		if err := s.unmarshaler.Unmarshal(&vals[0], &object); err != nil {
+			return nil, err
+		}
+		if batch := s.stash(object); batch != nil {
+			return batch, nil
+		}
+	}
+	// XXX move ObjectRange into objectRange as return value?
+	r, err := objectRange(s.pctx.Context, s.pool, s.snap, s.filter, &object)
+	if err != nil {
+		return nil, err
+	}
+	val, err := s.marshaler.Marshal(ObjectRange{object, r})
+	if err != nil {
+		return nil, err
+	}
+	return zbuf.NewArray([]zed.Value{*val}), nil
+}
+
+func (s *Slicer) next() zbuf.Batch {
+	//XXX TBD
+	return nil
+}
+
+func (s *Slicer) stash() zbuf.Batch {
+	//XXX TBD
+	return nil
+}
 
 // partitionObjects takes a sorted set of data objects with possibly overlapping
 // key ranges and returns an ordered list of Ranges such that none of the
@@ -122,42 +192,6 @@ func objectSpanLess(a, b objectSpan) bool {
 	}
 	return a.After(b.Last())
 }
-
-func partitionReader(ctx context.Context, zctx *zed.Context, layout order.Layout, snap commits.View, filter zbuf.Filter) (zio.Reader, error) {
-	parts, err := sortedPartitions(snap, layout, filter)
-	if err != nil {
-		return nil, err
-	}
-	m := zson.NewZNGMarshalerWithContext(zctx)
-	m.Decorate(zson.StylePackage)
-	return readerFunc(func() (*zed.Value, error) {
-		if len(parts) == 0 {
-			return nil, nil
-		}
-		p := parts[0]
-		val, err := m.Marshal(p)
-		parts = parts[1:]
-		return val, err
-	}), nil
-}
-
-func indexObjectReader(ctx context.Context, zctx *zed.Context, snap commits.View, order order.Which) (zio.Reader, error) {
-	indexes := snap.SelectIndexes(nil, order)
-	m := zson.NewZNGMarshalerWithContext(zctx)
-	m.Decorate(zson.StylePackage)
-	return readerFunc(func() (*zed.Value, error) {
-		if len(indexes) == 0 {
-			return nil, nil
-		}
-		val, err := m.Marshal(indexes[0])
-		indexes = indexes[1:]
-		return val, err
-	}), nil
-}
-
-type readerFunc func() (*zed.Value, error)
-
-func (r readerFunc) Read() (*zed.Value, error) { return r() }
 
 // A Partition is a logical view of the records within a time span, stored
 // in one or more data objects.  This provides a way to return the list of
