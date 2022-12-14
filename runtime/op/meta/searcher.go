@@ -26,19 +26,17 @@ type Searcher struct {
 	filter      zbuf.Filter
 	pctx        *op.Context
 	pool        *lake.Pool
-	progress    *zbuf.Progress
 	snap        commits.View
 	marshaler   *zson.MarshalZNGContext
 	unmarshaler *zson.UnmarshalZNGContext
 }
 
-func NewSearcher(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap commits.View, filter zbuf.Filter, progress *zbuf.Progress) *Searcher {
+func NewSearcher(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap commits.View, filter zbuf.Filter) *Searcher {
 	return &Searcher{
 		pctx:        pctx,
 		parent:      parent,
 		filter:      filter,
 		pool:        pool,
-		progress:    progress,
 		snap:        snap,
 		marshaler:   zson.NewZNGMarshaler(),
 		unmarshaler: zson.NewZNGUnmarshaler(),

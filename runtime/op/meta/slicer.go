@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/brimdata/zed"
-	"github.com/brimdata/zed/lake"
-	"github.com/brimdata/zed/lake/commits"
 	"github.com/brimdata/zed/lake/data"
 	"github.com/brimdata/zed/order"
 	"github.com/brimdata/zed/runtime/expr"
@@ -24,23 +21,20 @@ import (
 type Slicer struct {
 	parent      zbuf.Puller
 	pctx        *op.Context
-	pool        *lake.Pool
-	progress    *zbuf.Progress
-	snap        commits.View
 	marshaler   *zson.MarshalZNGContext
 	unmarshaler *zson.UnmarshalZNGContext
+	objects     []*objectSpan
+	cmp         expr.CompareFn
 }
 
-func NewSlicer(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap commits.View, filter zbuf.Filter, progress *zbuf.Progress) *Slicer {
+func NewSlicer(pctx *op.Context, parent zbuf.Puller, o order.Which) *Slicer {
 	return &Slicer{
-		pctx:        pctx,
 		parent:      parent,
-		filter:      filter,
-		pool:        pool,
-		progress:    progress,
-		snap:        snap,
+		pctx:        pctx,
 		marshaler:   zson.NewZNGMarshaler(),
 		unmarshaler: zson.NewZNGUnmarshaler(),
+		objects:     []*objectSpan{},
+		cmp:         extent.CompareFunc(o),
 	}
 }
 
@@ -51,40 +45,50 @@ func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 			return nil, err
 		}
 		if batch == nil {
-			//XXX return what we have
+			return s.next(), nil
 		}
 		vals := batch.Values()
 		if len(vals) != 1 {
 			// We currently support only one object per batch.
 			return nil, errors.New("system error: Searcher encountered multi-valued batch")
 		}
-		var object ObjectRange
-		if err := s.unmarshaler.Unmarshal(&vals[0], &object); err != nil {
+		var o ObjectRange
+		if err := s.unmarshaler.Unmarshal(&vals[0], &o); err != nil {
 			return nil, err
 		}
-		if batch := s.stash(object); batch != nil {
+		os := &objectSpan{
+			Span:   extent.NewGeneric(o.Object.First, o.Object.Last, s.cmp),
+			object: &o,
+		}
+		if batch := s.stash(os); batch != nil {
 			return batch, nil
 		}
 	}
-	// XXX move ObjectRange into objectRange as return value?
-	r, err := objectRange(s.pctx.Context, s.pool, s.snap, s.filter, &object)
-	if err != nil {
-		return nil, err
-	}
-	val, err := s.marshaler.Marshal(ObjectRange{object, r})
-	if err != nil {
-		return nil, err
-	}
-	return zbuf.NewArray([]zed.Value{*val}), nil
 }
 
 func (s *Slicer) next() zbuf.Batch {
+
 	//XXX TBD
 	return nil
 }
 
-func (s *Slicer) stash() zbuf.Batch {
-	//XXX TBD
+func (s *Slicer) stash(object *objectSpan) zbuf.Batch {
+	if len(s.objects) == 0 {
+		s.objects = append(s.objects, object)
+		return nil
+	}
+	// We collect all the subsequent objects that overlap with the base object
+	// until an objects start key XXX finish comment
+	// XXX handle case where first==last and preserve order that data was written
+	// into system when doing an in-order scan.
+	base := s.objects[0]
+	if object.After(base.Last()) {
+		//XXX TBD
+		// return what we have, but also recursively stash this object which could 
+		// trigger another partition and so on.  change protocol here to accumulate 
+		// batches in a slice/queue then return the batches from the queue.
+		return s.next()
+	}
 	return nil
 }
 
@@ -98,71 +102,44 @@ func (s *Slicer) stash() zbuf.Batch {
 // to merge *anything* that overlaps.  It's easy to fix though.
 // Issue #2538
 func partitionObjects(objects []*data.Object, o order.Which) []Partition {
-	if len(objects) == 0 {
-		return nil
-	}
-	cmp := extent.CompareFunc(o)
-	spans := sortedObjectSpans(objects, cmp)
-	var s stack
-	s.pushObjectSpan(spans[0], cmp)
-	for _, span := range spans[1:] {
-		tos := s.tos()
-		if span.Before(tos.Last()) {
-			s.pushObjectSpan(span, cmp)
-		} else {
-			tos.Objects = append(tos.Objects, span.object)
-			tos.Extend(span.Last())
+	return nil
+	/*
+		if len(objects) == 0 {
+			return nil
 		}
-	}
-	// On exit, the ranges in the stack are properly sorted so
-	// we just turn the ranges back into partitions.
-	partitions := make([]Partition, 0, len(s))
-	for _, r := range s {
-		partitions = append(partitions, Partition{
-			First:   r.First(),
-			Last:    r.Last(),
-			Objects: r.Objects,
-		})
-	}
-	return partitions
-}
-
-type Range struct {
-	extent.Span
-	Objects []*data.Object
-}
-
-type stack []Range
-
-func (s *stack) pushObjectSpan(span objectSpan, cmp expr.CompareFn) {
-	s.push(Range{
-		Span:    span.Span,
-		Objects: []*data.Object{span.object},
-	})
-}
-
-func (s *stack) push(r Range) {
-	*s = append(*s, r)
-}
-
-/* unused right now
-func (s *stack) pop() Range {
-	n := len(*s)
-	p := (*s)[n-1]
-	*s = (*s)[:n-1]
-	return p
-}
-*/
-
-func (s *stack) tos() *Range {
-	return &(*s)[len(*s)-1]
+		cmp := extent.CompareFunc(o)
+		spans := sortedObjectSpans(objects, cmp)
+		var s stack
+		s.pushObjectSpan(spans[0], cmp)
+		for _, span := range spans[1:] {
+			tos := s.tos()
+			if span.Before(tos.Last()) {
+				s.pushObjectSpan(span, cmp)
+			} else {
+				tos.Objects = append(tos.Objects, span.object)
+				tos.Extend(span.Last())
+			}
+		}
+		// On exit, the ranges in the stack are properly sorted so
+		// we just turn the ranges back into partitions.
+		partitions := make([]Partition, 0, len(s))
+		for _, r := range s {
+			partitions = append(partitions, Partition{
+				First:   r.First(),
+				Last:    r.Last(),
+				Objects: r.Objects,
+			})
+		}
+		return partitions
+	*/
 }
 
 type objectSpan struct {
 	extent.Span
-	object *data.Object
+	object *ObjectRange
 }
 
+/*
 func sortedObjectSpans(objects []*data.Object, cmp expr.CompareFn) []objectSpan {
 	spans := make([]objectSpan, 0, len(objects))
 	for _, o := range objects {
@@ -176,6 +153,7 @@ func sortedObjectSpans(objects []*data.Object, cmp expr.CompareFn) []objectSpan 
 	})
 	return spans
 }
+*/
 
 func objectSpanLess(a, b objectSpan) bool {
 	if b.Before(a.First()) {
