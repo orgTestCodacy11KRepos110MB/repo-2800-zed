@@ -43,6 +43,8 @@ func NewSearcher(pctx *op.Context, parent zbuf.Puller, pool *lake.Pool, snap com
 	}
 }
 
+//XXX seekindex range should be fetched by the sequence scanner
+
 type ObjectRange struct {
 	data.Object
 	Range *seekindex.Range

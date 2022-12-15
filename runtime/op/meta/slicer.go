@@ -1,7 +1,6 @@
 package meta
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 
@@ -13,17 +12,16 @@ import (
 	"github.com/brimdata/zed/runtime/op"
 	"github.com/brimdata/zed/zbuf"
 	"github.com/brimdata/zed/zson"
-	"github.com/segmentio/ksuid"
 )
 
-// Slicer implements an op that pulls metadata ObjectRanges and organizes
-// them into overlapping ObjectRanges into a sequence of non-overlapping Partitions.
+// Slicer implements an op that pulls metadata ObjectSpans and organizes
+// them into overlapping ObjectSpans into a sequence of non-overlapping Partitions.
 type Slicer struct {
 	parent      zbuf.Puller
 	pctx        *op.Context
 	marshaler   *zson.MarshalZNGContext
 	unmarshaler *zson.UnmarshalZNGContext
-	objects     []*objectSpan
+	objects     []*ObjectSpan
 	cmp         expr.CompareFn
 }
 
@@ -33,7 +31,7 @@ func NewSlicer(pctx *op.Context, parent zbuf.Puller, o order.Which) *Slicer {
 		pctx:        pctx,
 		marshaler:   zson.NewZNGMarshaler(),
 		unmarshaler: zson.NewZNGUnmarshaler(),
-		objects:     []*objectSpan{},
+		objects:     []*ObjectSpan{},
 		cmp:         extent.CompareFunc(o),
 	}
 }
@@ -52,11 +50,11 @@ func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 			// We currently support only one object per batch.
 			return nil, errors.New("system error: Searcher encountered multi-valued batch")
 		}
-		var o ObjectRange
+		var o ObjectSpan
 		if err := s.unmarshaler.Unmarshal(&vals[0], &o); err != nil {
 			return nil, err
 		}
-		os := &objectSpan{
+		os := &ObjectSpan{
 			Span:   extent.NewGeneric(o.Object.First, o.Object.Last, s.cmp),
 			object: &o,
 		}
@@ -72,7 +70,7 @@ func (s *Slicer) next() zbuf.Batch {
 	return nil
 }
 
-func (s *Slicer) stash(object *objectSpan) zbuf.Batch {
+func (s *Slicer) stash(object *ObjectSpan) zbuf.Batch {
 	if len(s.objects) == 0 {
 		s.objects = append(s.objects, object)
 		return nil
@@ -84,8 +82,8 @@ func (s *Slicer) stash(object *objectSpan) zbuf.Batch {
 	base := s.objects[0]
 	if object.After(base.Last()) {
 		//XXX TBD
-		// return what we have, but also recursively stash this object which could 
-		// trigger another partition and so on.  change protocol here to accumulate 
+		// return what we have, but also recursively stash this object which could
+		// trigger another partition and so on.  change protocol here to accumulate
 		// batches in a slice/queue then return the batches from the queue.
 		return s.next()
 	}
@@ -132,43 +130,6 @@ func partitionObjects(objects []*data.Object, o order.Which) []Partition {
 		}
 		return partitions
 	*/
-}
-
-type objectSpan struct {
-	extent.Span
-	object *ObjectRange
-}
-
-/*
-func sortedObjectSpans(objects []*data.Object, cmp expr.CompareFn) []objectSpan {
-	spans := make([]objectSpan, 0, len(objects))
-	for _, o := range objects {
-		spans = append(spans, objectSpan{
-			Span:   extent.NewGeneric(o.First, o.Last, cmp),
-			object: o,
-		})
-	}
-	sort.Slice(spans, func(i, j int) bool {
-		return objectSpanLess(spans[i], spans[j])
-	})
-	return spans
-}
-*/
-
-func objectSpanLess(a, b objectSpan) bool {
-	if b.Before(a.First()) {
-		return true
-	}
-	if !bytes.Equal(a.First().Bytes, b.First().Bytes) {
-		return false
-	}
-	if bytes.Equal(a.Last().Bytes, b.Last().Bytes) {
-		if a.object.Count != b.object.Count {
-			return a.object.Count < b.object.Count
-		}
-		return ksuid.Compare(a.object.ID, b.object.ID) < 0
-	}
-	return a.After(b.Last())
 }
 
 // A Partition is a logical view of the records within a time span, stored
