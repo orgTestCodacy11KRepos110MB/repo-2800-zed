@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// XXX Lister enumerates all the partitions in a scan.  After we get this working,
+// XXX Lister enumerates all the LimitedObjects in a scan.  After we get this working,
 // we will modularize further by listing just the objects and having
 // the slicer to organize objects into slices (formerly known as partitions).
 type Lister struct {
@@ -30,7 +30,7 @@ type Lister struct {
 	group     *errgroup.Group
 	marshaler *zson.MarshalZNGContext
 	mu        sync.Mutex
-	parts     []Partition
+	objects   []*LimitedObject
 	err       error
 }
 
@@ -63,6 +63,7 @@ func NewSortedListerFromSnap(ctx context.Context, r *lake.Root, pool *lake.Pool,
 	}
 }
 
+// XXX
 func (l *Lister) Snapshot() commits.View {
 	return l.snap
 }
@@ -70,21 +71,23 @@ func (l *Lister) Snapshot() commits.View {
 func (l *Lister) Pull(done bool) (zbuf.Batch, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.err != nil {
+	if l.err != nil || len(l.objects) == 0 {
 		return nil, l.err
 	}
-	if l.parts == nil {
-		l.parts, l.err = sortedPartitions(l.snap, l.pool.Layout, l.filter)
+	if l.objects == nil {
+		l.objects, l.err = initObjectScan(l.snap, l.pool.Layout, l.filter)
 		if l.err != nil {
 			return nil, l.err
 		}
 	}
-	if len(l.parts) == 0 {
+	//XXX we could change this so a scan can appear inside of a subgraph and
+	// be restarted after each time done is called (like head/tail work)
+	if len(l.objects) == 0 {
 		return nil, l.err
 	}
-	part := l.parts[0]
-	l.parts = l.parts[1:]
-	val, err := l.marshaler.Marshal(part)
+	o := l.objects[0]
+	l.objects = l.objects[1:]
+	val, err := l.marshaler.Marshal(o)
 	if err != nil {
 		l.err = err
 		return nil, err
@@ -107,43 +110,36 @@ func XXXfilterObjects(objects []*data.Object, filter *expr.SpanFilter, o order.W
 	return out
 }
 
-func filterSpannedObjects(objects []*data.Object, filter *expr.SpanFilter, o order.Which) []*ObjectSpan {
-	cmp := expr.NewValueCompareFn(o == order.Asc)
-	var out []*ObjectSpan
-	for _, obj := range objects {
-		span := extent.NewGeneric(obj.First, obj.Last, cmp)
-		if filter == nil || !filter.Eval(span.First(), span.Last()) {
-			out = append(out, &ObjectSpan{span, obj})
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return objectSpanLess(out[i], out[j])
-	})
-	return out
-}
-
-type ObjectSpan struct {
+type LimitedObject struct {
 	extent.Span
 	object *data.Object
 }
 
-/*
-func sortedObjectSpans(objects []*data.Object, cmp expr.CompareFn) []*objectSpan {
-	spans := make([]objectSpan, 0, len(objects))
-	for _, o := range objects {
-		spans = append(spans, objectSpan{
-			Span:   extent.NewGeneric(o.First, o.Last, cmp),
-			object: o,
-		})
+func initObjectScan(snap commits.View, layout order.Layout, filter zbuf.Filter) ([]*LimitedObject, error) {
+	objects := snap.Select(nil, layout.Order)
+	var f *expr.SpanFilter //XXX get rid of this
+	if filter != nil {
+		var err error
+		f, err = filter.AsKeySpanFilter(layout.Primary(), layout.Order)
+		if err != nil {
+			return nil, err
+		}
 	}
-	sort.Slice(spans, func(i, j int) bool {
-		return objectSpanLess(spans[i], spans[j])
+	cmp := expr.NewValueCompareFn(layout.Order == order.Asc)
+	var out []*LimitedObject
+	for _, obj := range objects {
+		span := extent.NewGeneric(obj.First, obj.Last, cmp)
+		if f == nil || !f.Eval(span.First(), span.Last()) {
+			out = append(out, &LimitedObject{span, obj})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return limitedObjectLess(out[i], out[j])
 	})
-	return spans
+	return out, nil
 }
-*/
 
-func objectSpanLess(a, b *ObjectSpan) bool {
+func limitedObjectLess(a, b *LimitedObject) bool {
 	if b.Before(a.First()) {
 		return true
 	}
@@ -158,20 +154,3 @@ func objectSpanLess(a, b *ObjectSpan) bool {
 	}
 	return a.After(b.Last())
 }
-
-/*XXX replace this with slicer implementation
-
-// sortedPartitions partitions all the data objects in snap overlapping
-// span into non-overlapping partitions and sorts them by pool key and order.
-func sortedPartitions(snap commits.View, layout order.Layout, filter zbuf.Filter) ([]Partition, error) {
-	objects := snap.Select(nil, layout.Order)
-	if filter != nil {
-		f, err := filter.AsKeySpanFilter(layout.Primary(), layout.Order)
-		if err != nil {
-			return nil, err
-		}
-		objects = filterObjects(objects, f, layout.Order)
-	}
-	return partitionObjects(objects, layout.Order), nil
-}
-*/

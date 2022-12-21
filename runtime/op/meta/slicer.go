@@ -9,7 +9,6 @@ import (
 	"github.com/brimdata/zed/order"
 	"github.com/brimdata/zed/runtime/expr"
 	"github.com/brimdata/zed/runtime/expr/extent"
-	"github.com/brimdata/zed/runtime/op"
 	"github.com/brimdata/zed/zbuf"
 	"github.com/brimdata/zed/zson"
 )
@@ -18,20 +17,20 @@ import (
 // them into overlapping ObjectSpans into a sequence of non-overlapping Partitions.
 type Slicer struct {
 	parent      zbuf.Puller
-	pctx        *op.Context
 	marshaler   *zson.MarshalZNGContext
 	unmarshaler *zson.UnmarshalZNGContext
-	objects     []*ObjectSpan
+	objects     []*LimitedObject
 	cmp         expr.CompareFn
 }
 
-func NewSlicer(pctx *op.Context, parent zbuf.Puller, o order.Which) *Slicer {
+func NewSlicer(parent zbuf.Puller, o order.Which) *Slicer {
+	u := zson.NewZNGUnmarshaler()
+	u.Bind(extent.Generic{})
 	return &Slicer{
 		parent:      parent,
-		pctx:        pctx,
 		marshaler:   zson.NewZNGMarshaler(),
-		unmarshaler: zson.NewZNGUnmarshaler(),
-		objects:     []*ObjectSpan{},
+		unmarshaler: u,
+		objects:     []*LimitedObject{},
 		cmp:         extent.CompareFunc(o),
 	}
 }
@@ -50,15 +49,18 @@ func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 			// We currently support only one object per batch.
 			return nil, errors.New("system error: Searcher encountered multi-valued batch")
 		}
-		var o ObjectSpan
-		if err := s.unmarshaler.Unmarshal(&vals[0], &o); err != nil {
+		var object LimitedObject
+		if err := s.unmarshaler.Unmarshal(&vals[0], &object); err != nil {
 			return nil, err
 		}
-		os := &ObjectSpan{
-			Span:   extent.NewGeneric(o.Object.First, o.Object.Last, s.cmp),
-			object: &o,
-		}
-		if batch := s.stash(os); batch != nil {
+		//XXX s.cmp won't survive marshaling... do this differently
+		//XXX here is where we need to make sure unmarshal handles the interface value
+		// TBD
+		//os := &LimitedObject{
+		//	Span:   extent.NewGeneric(o.Object.First, o.Object.Last, s.cmp),
+		//	object: &o,
+		///}
+		if batch := s.stash(&object); batch != nil {
 			return batch, nil
 		}
 	}
@@ -70,7 +72,7 @@ func (s *Slicer) next() zbuf.Batch {
 	return nil
 }
 
-func (s *Slicer) stash(object *ObjectSpan) zbuf.Batch {
+func (s *Slicer) stash(object *LimitedObject) zbuf.Batch {
 	if len(s.objects) == 0 {
 		s.objects = append(s.objects, object)
 		return nil

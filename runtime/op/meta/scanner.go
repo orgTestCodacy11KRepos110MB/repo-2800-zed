@@ -60,7 +60,7 @@ func NewPoolMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, po
 	return zbuf.NewScanner(ctx, zbuf.NewArray(vals), filter)
 }
 
-func NewCommitMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, poolID, commit ksuid.KSUID, meta string, filter zbuf.Filter) (zbuf.Scanner, error) {
+func NewCommitMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, poolID, commit ksuid.KSUID, meta string, filter zbuf.Filter) (zbuf.Puller, error) {
 	p, err := r.OpenPool(ctx, poolID)
 	if err != nil {
 		return nil, err
@@ -87,15 +87,11 @@ func NewCommitMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, 
 		}
 		return zbuf.NewScanner(ctx, reader, filter)
 	case "partitions":
-		snap, err := p.Snapshot(ctx, commit)
+		lister, err := NewSortedLister(ctx, r, p, commit, filter)
 		if err != nil {
 			return nil, err
 		}
-		reader, err := partitionReader(ctx, zctx, p.Layout, snap, filter)
-		if err != nil {
-			return nil, err
-		}
-		return zbuf.NewScanner(ctx, reader, filter)
+		return NewSlicer(lister, p.Layout.Order), nil
 	case "log":
 		tips, err := p.BatchifyBranchTips(ctx, zctx, nil)
 		if err != nil {
@@ -147,6 +143,7 @@ func objectReader(ctx context.Context, zctx *zed.Context, snap commits.View, ord
 	}), nil
 }
 
+/*
 func partitionReader(ctx context.Context, zctx *zed.Context, layout order.Layout, snap commits.View, filter zbuf.Filter) (zio.Reader, error) {
 	parts, err := sortedPartitions(snap, layout, filter)
 	if err != nil {
@@ -164,6 +161,7 @@ func partitionReader(ctx context.Context, zctx *zed.Context, layout order.Layout
 		return val, err
 	}), nil
 }
+*/
 
 func indexObjectReader(ctx context.Context, zctx *zed.Context, snap commits.View, order order.Which) (zio.Reader, error) {
 	indexes := snap.SelectIndexes(nil, order)
