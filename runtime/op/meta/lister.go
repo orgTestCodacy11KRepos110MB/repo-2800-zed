@@ -3,6 +3,7 @@ package meta
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 
@@ -19,7 +20,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// XXX Lister enumerates all the LimitedObjects in a scan.  After we get this working,
+// XXX Lister enumerates all the ObjectRanges in a scan.  After we get this working,
 // we will modularize further by listing just the objects and having
 // the slicer to organize objects into slices (formerly known as partitions).
 type Lister struct {
@@ -30,7 +31,7 @@ type Lister struct {
 	group     *errgroup.Group
 	marshaler *zson.MarshalZNGContext
 	mu        sync.Mutex
-	objects   []*LimitedObject
+	objects   []Slice
 	err       error
 }
 
@@ -69,17 +70,19 @@ func (l *Lister) Snapshot() commits.View {
 }
 
 func (l *Lister) Pull(done bool) (zbuf.Batch, error) {
+	fmt.Println("LISTER PULL")
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.err != nil || len(l.objects) == 0 {
-		return nil, l.err
-	}
 	if l.objects == nil {
 		l.objects, l.err = initObjectScan(l.snap, l.pool.Layout, l.filter)
 		if l.err != nil {
 			return nil, l.err
 		}
 	}
+	if l.err != nil || len(l.objects) == 0 {
+		return nil, l.err
+	}
+	fmt.Println("LISTER objects", len(l.objects))
 	//XXX we could change this so a scan can appear inside of a subgraph and
 	// be restarted after each time done is called (like head/tail work)
 	if len(l.objects) == 0 {
@@ -110,12 +113,18 @@ func XXXfilterObjects(objects []*data.Object, filter *expr.SpanFilter, o order.W
 	return out
 }
 
-type LimitedObject struct {
+type Slice struct {
+	First  *zed.Value
+	Last   *zed.Value
+	Object *data.Object
+}
+
+type objectSlice struct {
 	extent.Span
 	object *data.Object
 }
 
-func initObjectScan(snap commits.View, layout order.Layout, filter zbuf.Filter) ([]*LimitedObject, error) {
+func initObjectScan(snap commits.View, layout order.Layout, filter zbuf.Filter) ([]Slice, error) {
 	objects := snap.Select(nil, layout.Order)
 	var f *expr.SpanFilter //XXX get rid of this
 	if filter != nil {
@@ -126,20 +135,29 @@ func initObjectScan(snap commits.View, layout order.Layout, filter zbuf.Filter) 
 		}
 	}
 	cmp := expr.NewValueCompareFn(layout.Order == order.Asc)
-	var out []*LimitedObject
+	var out []*objectSlice
 	for _, obj := range objects {
 		span := extent.NewGeneric(obj.First, obj.Last, cmp)
 		if f == nil || !f.Eval(span.First(), span.Last()) {
-			out = append(out, &LimitedObject{span, obj})
+			out = append(out, &objectSlice{span, obj})
+
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return limitedObjectLess(out[i], out[j])
+		return objectSliceLess(out[i], out[j])
 	})
-	return out, nil
+	var slices []Slice
+	for _, o := range out {
+		slices = append(slices, Slice{
+			First:  o.First(),
+			Last:   o.Last(),
+			Object: o.object,
+		})
+	}
+	return slices, nil
 }
 
-func limitedObjectLess(a, b *LimitedObject) bool {
+func objectSliceLess(a, b *objectSlice) bool {
 	if b.Before(a.First()) {
 		return true
 	}

@@ -16,6 +16,7 @@ require (
 	github.com/gorilla/mux v1.7.5-0.20200711200521-98cb6bf42e08
 	github.com/gosuri/uilive v0.0.4
 	github.com/hashicorp/golang-lru/v2 v2.0.1
+	github.com/kr/pretty v0.3.0
 	github.com/kr/text v0.2.0
 	github.com/paulbellamy/ratecounter v0.2.0
 	github.com/pbnjay/memory v0.0.0-20190104145345-974d429e7ae4
@@ -66,6 +67,7 @@ require (
 	github.com/prometheus/common v0.10.0 // indirect
 	github.com/prometheus/procfs v0.1.3 // indirect
 	github.com/rivo/uniseg v0.1.0 // indirect
+	github.com/rogpeppe/go-internal v1.9.0 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opentelemetry.io/otel v0.16.0 // indirect
 	go.uber.org/atomic v1.7.0 // indirect

@@ -5,39 +5,52 @@ import (
 	"fmt"
 
 	"github.com/brimdata/zed"
+	"github.com/brimdata/zed/lake/commits"
 	"github.com/brimdata/zed/lake/data"
 	"github.com/brimdata/zed/order"
 	"github.com/brimdata/zed/runtime/expr"
 	"github.com/brimdata/zed/runtime/expr/extent"
 	"github.com/brimdata/zed/zbuf"
 	"github.com/brimdata/zed/zson"
+	"github.com/kr/pretty"
 )
 
-// Slicer implements an op that pulls metadata ObjectSpans and organizes
-// them into overlapping ObjectSpans into a sequence of non-overlapping Partitions.
+// Slicer implements an op that pulls metadata ObjectSlices and organizes
+// them into overlapping ObjectSlices into a sequence of non-overlapping Partitions.
 type Slicer struct {
 	parent      zbuf.Puller
 	marshaler   *zson.MarshalZNGContext
 	unmarshaler *zson.UnmarshalZNGContext
-	objects     []*LimitedObject
+	slices      []Slice
 	cmp         expr.CompareFn
 }
 
 func NewSlicer(parent zbuf.Puller, o order.Which) *Slicer {
 	u := zson.NewZNGUnmarshaler()
-	u.Bind(extent.Generic{})
+	u.Bind(&extent.Generic{})
 	return &Slicer{
 		parent:      parent,
 		marshaler:   zson.NewZNGMarshaler(),
 		unmarshaler: u,
-		objects:     []*LimitedObject{},
+		slices:      []Slice{},
 		cmp:         extent.CompareFunc(o),
 	}
+}
+
+func (s *Slicer) Snapshot() commits.View {
+	//XXX
+	return s.parent.(*Lister).Snapshot()
 }
 
 func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 	for {
 		batch, err := s.parent.Pull(done)
+		if batch != nil {
+			fmt.Println("SLICER PULL", len(batch.Values()))
+		} else {
+			fmt.Println("SLICER PULL nil", err)
+
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -49,10 +62,14 @@ func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 			// We currently support only one object per batch.
 			return nil, errors.New("system error: Searcher encountered multi-valued batch")
 		}
-		var object LimitedObject
-		if err := s.unmarshaler.Unmarshal(&vals[0], &object); err != nil {
+		var slice Slice
+		if err := s.unmarshaler.Unmarshal(&vals[0], &slice); err != nil {
 			return nil, err
 		}
+		cmp := expr.NewValueCompareFn(true)
+		cmp(slice.First, slice.Last)
+
+		pretty.Println("D", slice)
 		//XXX s.cmp won't survive marshaling... do this differently
 		//XXX here is where we need to make sure unmarshal handles the interface value
 		// TBD
@@ -60,29 +77,28 @@ func (s *Slicer) Pull(done bool) (zbuf.Batch, error) {
 		//	Span:   extent.NewGeneric(o.Object.First, o.Object.Last, s.cmp),
 		//	object: &o,
 		///}
-		if batch := s.stash(&object); batch != nil {
+		if batch := s.stash(slice); batch != nil {
 			return batch, nil
 		}
 	}
 }
 
 func (s *Slicer) next() zbuf.Batch {
-
 	//XXX TBD
 	return nil
 }
 
-func (s *Slicer) stash(object *LimitedObject) zbuf.Batch {
-	if len(s.objects) == 0 {
-		s.objects = append(s.objects, object)
+func (s *Slicer) stash(slice Slice) zbuf.Batch {
+	if len(s.slices) == 0 {
+		s.slices = append(s.slices, slice)
 		return nil
 	}
 	// We collect all the subsequent objects that overlap with the base object
 	// until an objects start key XXX finish comment
 	// XXX handle case where first==last and preserve order that data was written
 	// into system when doing an in-order scan.
-	base := s.objects[0]
-	if object.After(base.Last()) {
+	base := s.slices[0]
+	if slice.After(base.Last()) {
 		//XXX TBD
 		// return what we have, but also recursively stash this object which could
 		// trigger another partition and so on.  change protocol here to accumulate
@@ -134,7 +150,7 @@ func partitionObjects(objects []*data.Object, o order.Which) []Partition {
 	*/
 }
 
-// A Partition is a logical view of the records within a time span, stored
+// A Partition is a logical view of the records within a pool-key span, stored
 // in one or more data objects.  This provides a way to return the list of
 // objects that should be scanned along with a span to limit the scan
 // to only the span involved.
