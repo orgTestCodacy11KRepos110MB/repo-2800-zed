@@ -169,7 +169,6 @@ func (s *statScanner) Pull(done bool) (zbuf.Batch, error) {
 
 func objectRange(ctx context.Context, pool *lake.Pool, snap commits.View, filter zbuf.Filter, o *data.Object) (seekindex.Range, error) {
 	var indexSpan extent.Span
-	var cropped *expr.SpanFilter
 	//XXX this is suboptimal because we traverse every index rule of every object
 	// even though we should know what rules we need upstream by analyzing the
 	// type of index lookup we're doing and select only the rules needed
@@ -186,21 +185,15 @@ func objectRange(ctx context.Context, pool *lake.Pool, snap commits.View, filter
 				}
 			}
 		}
-		var err error
-		cropped, err = filter.AsKeyCroppedByFilter(pool.Layout.Primary(), pool.Layout.Order)
-		if err != nil {
-			return seekindex.Range{}, err
-		}
 	}
-	cmp := expr.NewValueCompareFn(order.Asc, pool.Layout.Order == order.Asc)
-	span := extent.NewGeneric(o.First, o.Last, cmp)
-	if indexSpan != nil || cropped != nil && cropped.Eval(span.First(), span.Last()) {
-		// There's an index available or the object's span is cropped by
-		// p.filter, so use the seek index to find the range to scan.
+	// There's an index available or the object's span is cropped by
+	// filter, so use the seek index to find the range to scan. XXX
+	if indexSpan != nil || filter != nil {
 		spanFilter, err := filter.AsKeySpanFilter(pool.Layout.Primary(), pool.Layout.Order)
 		if err != nil {
 			return seekindex.Range{}, err
 		}
+		cmp := expr.NewValueCompareFn(order.Asc, pool.Layout.Order == order.Asc)
 		return data.LookupSeekRange(ctx, pool.Storage(), pool.DataPath, o, cmp, spanFilter, indexSpan)
 	}
 	// Scan the entire object.
