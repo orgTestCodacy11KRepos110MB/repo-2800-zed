@@ -588,13 +588,20 @@ func (b *Builder) compileTrunk(trunk *dag.Trunk, parent zbuf.Puller) ([]zbuf.Pul
 			if err != nil {
 				return nil, err
 			}
+			var pruner expr.Evaluator
+			if trunk.KeyPruner != nil {
+				pruner, err = compileExpr(trunk.KeyPruner)
+				if err != nil {
+					return nil, err
+				}
+			}
 			// We pass a new type context in here because we don't want the metadata types to interfere
 			// with the downstream flowgraph.  And there's no need to map between contexts because
 			// the metadata here is intercepted by the scanner and these zed values never enter
 			// the flowgraph.  For the metaqueries below, we pass in the flowgraph's type context
 			// because this data does, in fact, flow into the downstream flowgraph.
 			zctx := zed.NewContext()
-			l, err := meta.NewSortedLister(b.pctx.Context, zctx, lk, pool, src.Commit, filter)
+			l, err := meta.NewSortedLister(b.pctx.Context, zctx, lk, pool, src.Commit, pruner)
 			if err != nil {
 				return nil, err
 			}

@@ -67,7 +67,7 @@ func NewCommitMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, 
 	}
 	switch meta {
 	case "objects":
-		return NewSortedLister(ctx, zctx, r, p, commit, filter)
+		return NewSortedLister(ctx, zctx, r, p, commit, nil)
 	case "indexes":
 		snap, err := p.Snapshot(ctx, commit)
 		if err != nil {
@@ -79,7 +79,7 @@ func NewCommitMetaScanner(ctx context.Context, zctx *zed.Context, r *lake.Root, 
 		}
 		return zbuf.NewScanner(ctx, reader, filter)
 	case "partitions":
-		lister, err := NewSortedLister(ctx, zctx, r, p, commit, filter)
+		lister, err := NewSortedLister(ctx, zctx, r, p, commit, nil)
 		if err != nil {
 			return nil, err
 		}

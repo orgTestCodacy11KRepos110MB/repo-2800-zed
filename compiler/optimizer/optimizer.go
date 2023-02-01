@@ -63,10 +63,15 @@ func (o *Optimizer) OptimizeScan() error {
 		seq.Delete(1, len)
 	}
 	// Add pool range query to pushdown (if available).
+	// Also, check to see if we can add a range pruner when the pool-key is used
+	// in a normal filtering operation.
 	for k := range from.Trunks {
 		trunk := &from.Trunks[k]
 		if layout, ok := o.layouts[trunk.Source]; ok {
 			addRangeToPushdown(trunk, layout.Primary())
+			if pushdown, ok := trunk.Pushdown.(*dag.Filter); ok {
+				trunk.KeyPruner = newRangePruner(pushdown.Expr, layout.Primary(), layout.Order)
+			}
 		}
 	}
 	return nil
@@ -81,6 +86,7 @@ func addRangeToPushdown(trunk *dag.Trunk, key field.Path) {
 		trunk.Pushdown = &dag.Filter{Kind: "Filter", Expr: rangeExpr}
 		return
 	}
+	//XXX should pushdown just be a dag.Expr instead of dag.Op?  or maybe even dag.Boolean?
 	filter := trunk.Pushdown.(*dag.Filter)
 	filter.Expr = dag.NewBinaryExpr("and", rangeExpr, filter.Expr)
 }
@@ -323,4 +329,130 @@ func pushDown(trunk *dag.Trunk) {
 		trunk.Seq = nil
 	}
 	trunk.Pushdown = filter
+}
+
+// newRangePruner returns a new predicate based on the input predicate pred
+// that when applied to an input value (i.e., "this") with fields from/to, returns
+// true if comparisons in pred against literal values can for certain rule out
+// that pred would be true for any value in the from/to range.  From/to are presumed
+// to be ordered according to the order o.  This is used to prune metadata objects
+// from a scan when we know the pool-key range of the object could not satisfy
+// the filter predicate of any of the values in the object.
+func newRangePruner(pred dag.Expr, fld field.Path, o order.Which) *dag.BinaryExpr {
+	lower := &dag.This{Kind: "This", Path: field.New("from")}
+	upper := &dag.This{Kind: "This", Path: field.New("to")}
+	if o == order.Desc {
+		lower, upper = upper, lower
+	}
+	e, _ := buildRangePruner(pred, fld, lower, upper)
+	return e
+}
+
+func buildRangePruner(pred dag.Expr, fld field.Path, lower, upper *dag.This) (*dag.BinaryExpr, bool) {
+	e, ok := pred.(*dag.BinaryExpr)
+	if !ok {
+		//XXX this doesn't work because you could have some other logic (like a func return bool)
+		// that could rely on fld... e.g., a simple cast
+		//return nil, true
+		return nil, false
+	}
+	switch e.Op {
+	case "and", "or":
+		lhs, lok := buildRangePruner(e.LHS, fld, lower, upper)
+		rhs, rok := buildRangePruner(e.RHS, fld, lower, upper)
+		if !lok || !rok {
+			return nil, false
+		}
+		if lhs == nil {
+			return rhs, true
+		}
+		if rhs == nil {
+			return lhs, true
+		}
+		// We "and" the two sides here as we can only prune if
+		// both sub-expressions say it's ok.
+		return dag.NewBinaryExpr("and", lhs, rhs), true
+	case "==", "<", "<=", ">", ">=":
+		this, literal, op := literalComparison(e)
+		if this == nil {
+			return nil, false
+		}
+		if !fld.Equal(this.Path) {
+			// It's a literal comparison and we know fld isn't involved,
+			// so we know this doesn't effect the prune decision and we
+			// can return true here.
+			return nil, true
+		}
+		// At this point, we know we can definitely run a pruning decision based
+		// on the literal value we found, the comparison op, and the lower/upper bounds.
+		//XXX this should use compare for cross-type comparisons...
+		// XXX need to use lower/upper here
+		return rangePrunerPred(op, literal, lower, upper), true
+	default:
+		return nil, false
+	}
+}
+
+func rangePrunerPred(op string, literal *dag.Literal, lower, upper *dag.This) *dag.BinaryExpr {
+	//XXX these should use the compare func (or it seems like the language should support this natively)
+	switch op {
+	case "<":
+		// key < CONST
+		return dag.NewBinaryExpr("<=", literal, lower)
+	case "<=":
+		// key <= CONST
+		return dag.NewBinaryExpr("<", literal, lower)
+	case ">":
+		// key > CONST
+		return dag.NewBinaryExpr(">=", literal, upper)
+	case ">=":
+		// key >= CONST
+		return dag.NewBinaryExpr(">", literal, upper)
+	case "==":
+		// key == CONST
+		return dag.NewBinaryExpr("or",
+			dag.NewBinaryExpr("<", literal, lower),
+			dag.NewBinaryExpr(">", literal, upper))
+	}
+	panic("rangePrunerPred unknown op " + op)
+}
+
+// XXX keep this for above
+func relativeToCompare(op string, lhs, rhs dag.Expr, o order.Which) *dag.BinaryExpr {
+	nullsMax := &dag.Literal{Kind: "Literal", Value: "false"}
+	if o == order.Asc {
+		nullsMax.Value = "true"
+	}
+	lhs = &dag.Call{Kind: "Call", Name: "compare", Args: []dag.Expr{lhs, rhs, nullsMax}}
+	return dag.NewBinaryExpr(op, lhs, &dag.Literal{Kind: "Literal", Value: "0"})
+}
+
+func literalComparison(e *dag.BinaryExpr) (*dag.This, *dag.Literal, string) {
+	switch lhs := e.LHS.(type) {
+	case *dag.This:
+		if rhs, ok := e.RHS.(*dag.Literal); ok {
+			return lhs, rhs, e.Op
+		}
+	case *dag.Literal:
+		if rhs, ok := e.RHS.(*dag.This); ok {
+			return rhs, lhs, reverseComparator(e.Op)
+		}
+	}
+	return nil, nil, ""
+}
+
+func reverseComparator(op string) string {
+	switch op {
+	case "==", "!=":
+		return op
+	case "<":
+		return ">="
+	case "<=":
+		return ">"
+	case ">":
+		return "<="
+	case ">=":
+		return "<"
+	}
+	panic("unknown op")
 }
